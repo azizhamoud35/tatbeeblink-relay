@@ -86,14 +86,18 @@ func (s *SimpleRelay) Start() error {
 func (s *SimpleRelay) handleConnection(conn net.Conn) {
 	defer conn.Close()
 
+	clientAddr := conn.RemoteAddr().String()
+	log.Printf("🔌 New connection from %s", clientAddr)
+
 	// Read simple text protocol: "REGISTER\n" byte-by-byte to avoid buffering
+	log.Printf("📖 [%s] Reading REGISTER command...", clientAddr)
 	conn.SetReadDeadline(time.Now().Add(10 * time.Second))
 	var line strings.Builder
 	buf := make([]byte, 1)
 	for {
 		_, err := conn.Read(buf)
 		if err != nil {
-			log.Printf("Failed to read command: %v", err)
+			log.Printf("❌ [%s] Failed to read command: %v", clientAddr, err)
 			return
 		}
 		if buf[0] == '\n' {
@@ -104,15 +108,19 @@ func (s *SimpleRelay) handleConnection(conn net.Conn) {
 	conn.SetReadDeadline(time.Time{})
 
 	command := strings.TrimSpace(line.String())
+	log.Printf("📝 [%s] Received command: '%s'", clientAddr, command)
+	
 	if command != "REGISTER" {
-		log.Printf("Unknown command: %s", command)
+		log.Printf("❌ [%s] Unknown command: %s", clientAddr, command)
 		return
 	}
 
 	// Allocate port
+	log.Printf("🔢 [%s] Allocating port...", clientAddr)
 	s.mu.Lock()
 	if s.nextPortIndex >= len(s.portPool) {
 		s.mu.Unlock()
+		log.Printf("❌ [%s] No ports available (used %d/%d)", clientAddr, s.nextPortIndex, len(s.portPool))
 		conn.Write([]byte("ERROR No ports available\n"))
 		return
 	}
@@ -121,30 +129,37 @@ func (s *SimpleRelay) handleConnection(conn net.Conn) {
 	tenantID := fmt.Sprintf("tenant-%d", port)
 	s.mu.Unlock()
 
+	log.Printf("✅ [%s] Allocated port %d (tenant: %s)", clientAddr, port, tenantID)
+
 	// Send response
 	response := fmt.Sprintf("OK port:%d\n", port)
+	log.Printf("📤 [%s] Sending response: '%s'", clientAddr, strings.TrimSpace(response))
 	if _, err := conn.Write([]byte(response)); err != nil {
-		log.Printf("Failed to send response: %v", err)
+		log.Printf("❌ [%s] Failed to send response: %v", clientAddr, err)
 		return
 	}
 
-	log.Printf("✅ Registered tenant %s on port %d", tenantID, port)
+	log.Printf("✅ [%s] Response sent successfully", clientAddr)
 
 	// Create yamux session
+	log.Printf("🔀 [%s] Creating yamux session...", clientAddr)
 	session, err := yamux.Server(conn, nil)
 	if err != nil {
-		log.Printf("Failed to create yamux session: %v", err)
+		log.Printf("❌ [%s] Failed to create yamux session: %v", clientAddr, err)
 		return
 	}
 	defer session.Close()
+	log.Printf("✅ [%s] Yamux session created successfully", clientAddr)
 
 	// Start TCP listener on assigned port
+	log.Printf("🎧 [%s] Starting listener on port %d...", clientAddr, port)
 	listener, err := net.Listen("tcp", fmt.Sprintf(":%d", port))
 	if err != nil {
-		log.Printf("Failed to listen on port %d: %v", port, err)
+		log.Printf("❌ [%s] Failed to listen on port %d: %v", clientAddr, port, err)
 		return
 	}
 	defer listener.Close()
+	log.Printf("✅ [%s] Listening on port %d", clientAddr, port)
 
 	tenant := &SimpleTenant{
 		ID:           tenantID,
@@ -161,65 +176,84 @@ func (s *SimpleRelay) handleConnection(conn net.Conn) {
 		s.mu.Lock()
 		delete(s.tenants, tenantID)
 		s.mu.Unlock()
-		log.Printf("Unregistered tenant %s", tenantID)
+		log.Printf("🔌 [%s] Unregistered tenant %s (port %d)", clientAddr, tenantID, port)
 	}()
 
-	log.Printf("🎧 Listening on port %d for connections", port)
+	log.Printf("🎧 [%s] Ready! Waiting for client connections on port %d...", clientAddr, port)
 
 	// Accept client connections and forward through yamux
+	connCount := 0
 	for {
 		clientConn, err := listener.Accept()
 		if err != nil {
-			log.Printf("Error accepting client connection: %v", err)
+			log.Printf("❌ [%s] Error accepting client connection: %v", clientAddr, err)
 			return
 		}
 
-		go s.handleClientConnection(clientConn, tenant)
+		connCount++
+		log.Printf("🔗 [%s] Client connection #%d received on port %d", clientAddr, connCount, port)
+
+		go s.handleClientConnection(clientConn, tenant, connCount)
 	}
 }
 
-func (s *SimpleRelay) handleClientConnection(clientConn net.Conn, tenant *SimpleTenant) {
+func (s *SimpleRelay) handleClientConnection(clientConn net.Conn, tenant *SimpleTenant, connNum int) {
 	defer clientConn.Close()
 
-	log.Printf("🔗 Client connected to port %d, opening stream...", tenant.AssignedPort)
+	clientAddr := clientConn.RemoteAddr().String()
+	log.Printf("🔗 [Conn#%d] Client %s connected to port %d", connNum, clientAddr, tenant.AssignedPort)
 
 	// Open a new stream to the agent
+	log.Printf("📡 [Conn#%d] Opening yamux stream to agent...", connNum)
 	stream, err := tenant.YamuxSession.OpenStream()
 	if err != nil {
-		log.Printf("Failed to open stream: %v", err)
+		log.Printf("❌ [Conn#%d] Failed to open stream: %v", connNum, err)
 		return
 	}
 	defer stream.Close()
+	log.Printf("✅ [Conn#%d] Yamux stream opened", connNum)
 
 	tenant.mu.Lock()
 	tenant.ActiveConns++
+	activeConns := tenant.ActiveConns
 	tenant.mu.Unlock()
+	log.Printf("📊 [Conn#%d] Active connections: %d", connNum, activeConns)
 
 	defer func() {
 		tenant.mu.Lock()
 		tenant.ActiveConns--
+		activeConns := tenant.ActiveConns
 		tenant.mu.Unlock()
+		log.Printf("📊 [Conn#%d] Connection closed. Remaining: %d", connNum, activeConns)
 	}()
 
-	log.Printf("✅ Stream opened, forwarding data...")
+	log.Printf("🔄 [Conn#%d] Starting bidirectional data forwarding...", connNum)
 
 	// Forward data bidirectionally
 	done := make(chan bool, 2)
 
 	// Client -> Agent
 	go func() {
-		io.Copy(stream, clientConn)
+		n, err := io.Copy(stream, clientConn)
+		if err != nil {
+			log.Printf("⚠️ [Conn#%d] Client->Agent error: %v", connNum, err)
+		}
+		log.Printf("📤 [Conn#%d] Client->Agent: %d bytes", connNum, n)
 		done <- true
 	}()
 
 	// Agent -> Client
 	go func() {
-		io.Copy(clientConn, stream)
+		n, err := io.Copy(clientConn, stream)
+		if err != nil {
+			log.Printf("⚠️ [Conn#%d] Agent->Client error: %v", connNum, err)
+		}
+		log.Printf("📥 [Conn#%d] Agent->Client: %d bytes", connNum, n)
 		done <- true
 	}()
 
 	<-done
-	log.Printf("Connection closed for port %d", tenant.AssignedPort)
+	log.Printf("🔌 [Conn#%d] Connection finished (port %d)", connNum, tenant.AssignedPort)
 }
 
 func (s *SimpleRelay) startHealthCheck() {
