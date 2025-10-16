@@ -1,0 +1,36 @@
+{
+  "server": {
+    "controlPort": 8443,
+    "tenantPortStart": 50000,
+    "tenantPortEnd": 60000,
+    "maxConnectionsPerTenant": 10,
+    "connectionTimeoutSeconds": 300,
+    "publicHost": "link.tatbeeb.sa"
+  },
+  "tls": {
+    "certFile": "/etc/letsencrypt/live/link.tatbeeb.sa/fullchain.pem",
+    "keyFile": "/etc/letsencrypt/live/link.tatbeeb.sa/privkey.pem"
+  },
+  "jwt": {
+    "secret": "9d94fb6122cc2746706b19b3df4d7bee91cb3563bfa8db204fda38b435a34cff",
+    "issuer": "his.tatbeeb.sa",
+    "audience": "tatbeeb-link.tatbeeb.sa"
+  },
+  "his": {
+    "backendUrl": "https://api-o4z44iwhxa-uc.a.run.app",
+    "relaySharedSecret": "a8893933d569fd95c4fbf50619ac32c4d2571719425f83c0c826c0cccd00e15a",
+    "registerPortEndpoint": "/api/v2/tatbeeb-link/register-port",
+    "heartbeatEndpoint": "/api/v2/tatbeeb-link/heartbeat",
+    "heartbeatIntervalSeconds": 60
+  },
+  "monitoring": {
+    "enableMetrics": true,
+    "metricsPort": 9090,
+    "healthCheckIntervalSeconds": 60
+  },
+  "logging": {
+    "level": "info",
+    "format": "json"
+  }
+}
+
