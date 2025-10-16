@@ -1,7 +1,6 @@
 package main
 
 import (
-	"bufio"
 	"crypto/tls"
 	"encoding/json"
 	"fmt"
@@ -87,17 +86,26 @@ func (s *SimpleRelay) Start() error {
 func (s *SimpleRelay) handleConnection(conn net.Conn) {
 	defer conn.Close()
 
-	// Read simple text protocol: "REGISTER\n"
-	reader := bufio.NewReader(conn)
-	line, err := reader.ReadString('\n')
-	if err != nil {
-		log.Printf("Failed to read command: %v", err)
-		return
+	// Read simple text protocol: "REGISTER\n" byte-by-byte to avoid buffering
+	conn.SetReadDeadline(time.Now().Add(10 * time.Second))
+	var line strings.Builder
+	buf := make([]byte, 1)
+	for {
+		_, err := conn.Read(buf)
+		if err != nil {
+			log.Printf("Failed to read command: %v", err)
+			return
+		}
+		if buf[0] == '\n' {
+			break
+		}
+		line.WriteByte(buf[0])
 	}
+	conn.SetReadDeadline(time.Time{})
 
-	line = strings.TrimSpace(line)
-	if line != "REGISTER" {
-		log.Printf("Unknown command: %s", line)
+	command := strings.TrimSpace(line.String())
+	if command != "REGISTER" {
+		log.Printf("Unknown command: %s", command)
 		return
 	}
 
